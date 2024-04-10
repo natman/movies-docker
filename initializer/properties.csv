@@ -1,0 +1,56 @@
+a pour bénéficiaire|wikibase-item
+a pour délégataire|wikibase-item
+a pour partenaire|wikibase-item
+a pour prédécesseur|wikibase-item
+a pour signataire|wikibase-item
+a pour successeur|wikibase-item
+abroge|wikibase-item
+code uai|string
+code établissement|string
+création|edtf
+début application|edtf
+début|edtf
+en tant que mandant de|wikibase-item
+en tant que mandataire|wikibase-item
+est bénéficiaire de|wikibase-item
+est délégataire de|wikibase-item
+est membre de|wikibase-item
+est signataire de|wikibase-item
+fin application|edtf
+fin|edtf
+forme juridique|wikibase-item
+habilitation doctorale|wikibase-item
+identifiant cnrs|string
+identifiant contrat|string
+identifiant cti|string
+identifiant ed|string
+identifiant eter|string
+identifiant funding data|string
+identifiant grid|string
+identifiant hal|string
+identifiant idref|string
+identifiant isil|string
+identifiant isni|string
+identifiant légifrance|string
+identifiant orgref|string
+identifiant paysage|string
+identifiant pia|string
+identifiant pic|string
+identifiant rcr|string
+identifiant rnsr|string
+identifiant ror|string
+identifiant scanr|string
+identifiant siren|string
+identifiant siret|string
+identifiant viaf|string
+identifiant wikidata|string
+instance de|wikibase-item
+nom|string
+nor|string
+preuve|wikibase-item
+sigle|string
+source|wikibase-item
+sous classe de|wikibase-item
+suppression|edtf
+type|wikibase-item
+uri|url

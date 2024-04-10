@@ -1,0 +1,459 @@
+# Example Wikibase docker-compose setup
+version: '3.4'
+
+x-common-variables: &wikibase_variables
+  DB_SERVER: movies-wikibase-mysql.svc:3306
+  MW_ADMIN_NAME: ${MOVIES_WIKIBASE_MW_ADMIN_NAME}
+  MW_ADMIN_PASS: ${MOVIES_WIKIBASE_MW_ADMIN_PASS}
+  MW_ADMIN_EMAIL: ${MOVIES_WIKIBASE_MW_ADMIN_EMAIL}
+  MW_WG_SECRET_KEY: ${MOVIES_WIKIBASE_MW_SECRET_KEY}
+  # Disable jobs running after requests when wikibase_jobrunner is defined
+  MW_WG_JOB_RUN_RATE: 0
+  DB_USER: ${MOVIES_WIKIBASE_DB_USER}
+  DB_PASS: ${MOVIES_WIKIBASE_DB_PASS}
+  DB_NAME: ${MOVIES_WIKIBASE_DB_NAME}
+  WIKIBASE_HOST: ${MOVIES_WIKIBASE_HOST}
+  LDAP_SERVER: ${MOVIES_WIKIBASE_LDAP_SERVER}
+  LDAP_PORT: ${MOVIES_WIKIBASE_LDAP_PORT}
+  LDAP_USER: ${MOVIES_WIKIBASE_LDAP_USER}
+  LDAP_PASS: ${MOVIES_WIKIBASE_LDAP_PASS}
+  LDAP_DOMAIN: ${MOVIES_WIKIBASE_LDAP_DOMAIN}
+  LDAP_MAILS: ${MOVIES_WIKIBASE_LDAP_MAILS}
+
+services:
+   
+  movies-rp:    
+    image: nginx:1.25
+    container_name: movies-rp
+    restart: unless-stopped
+    ports:
+      - "${MOVIES_RP_PORT}:80"
+    volumes:
+      - conf:/etc/nginx/conf.d
+      - certs:/etc/nginx/certs:ro
+      - vhost.d:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - dhparam:/etc/nginx/dhparam
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+      - ./reverse-proxy/uploadsize.conf:/etc/nginx/conf.d/uploadsize.conf
+      # Voir https://hub.docker.com/_/nginx/ : "using environnment variables"      
+      - ./reverse-proxy/wikibase.conf.template:/etc/nginx/templates/wikibase.conf.template
+    networks:
+      - default
+    environment:
+      MOVIES_WIKIBASE_URL_PUBLIQUE: ${MOVIES_WIKIBASE_URL_PUBLIQUE}
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-rp"
+
+  movies-wikibase:
+    image: abesesr/movies:develop-wikibase
+    container_name: movies-wikibase
+    links:
+      - movies-wikibase-mysql
+    depends_on:
+      - movies-rp
+      - movies-wikibase-mysql
+    restart: unless-stopped
+    volumes:
+      ## This shares the configuration with jobrunner
+      - shared:/var/www/html/:rw
+      ## Uncomment this next line to mount your own LocalSettings.php file
+      ## also uncomment the same line in the wikibase_jobrunner service!
+      - ./wikibase/LocalSettings.php:/var/www/html/LocalSettings.d/LocalSettings.override.php
+      ## Accessibilité du logo dans l'environnement d'execution
+      - ./wikibase/img/wikibase_logo.png:/var/www/html/img/wikibase_logo.png
+      ## Remplacement du favicon
+      - ./wikibase/img/favicon.ico:/var/www/html/favicon.ico
+      ## Pour la connexion au LDAP en LDAPS
+      - ./wikibase/ldap.conf:/etc/ldap/ldap.conf
+    networks:
+      default:
+        aliases:
+         - ${MOVIES_WIKIBASE_HOST}
+    environment:
+      <<: *wikibase_variables
+      WIKIBASE_PINGBACK: ${MOVIES_WIKIBASE_PINGBACK}
+      MW_WG_ENABLE_UPLOADS: ${MOVIES_WIKIBASE_MW_WG_ENABLE_UPLOADS}
+      QS_PUBLIC_SCHEME_HOST_AND_PORT:
+      WIKIBASE_URL_PUBLIQUE: ${MOVIES_WIKIBASE_URL_PUBLIQUE}
+      WIKIBASE_SCHEME: ${MOVIES_WIKIBASE_SCHEME}
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-wikibase"
+      # pour que les mises à jour de cette image soient auto-déployées par watchtower
+      - "com.centurylinklabs.watchtower.scope=movies-watchtower-scope"
+
+  movies-wikibase-jobrunner:
+    image: abesesr/movies:develop-wikibase
+    container_name: movies-wikibase-jobrunner
+    entrypoint: /bin/bash
+    command:  /jobrunner-entrypoint.sh
+    links:
+      - movies-wikibase-mysql
+    depends_on:
+      - movies-wikibase-mysql
+    restart: unless-stopped
+    volumes:
+      - shared:/shared/:ro
+      - ./wikibase/jobrunner-entrypoint.sh:/jobrunner-entrypoint.sh
+      ## Uncomment this next line to mount your own LocalSettings.php file
+      ## also uncomment the same line in the wikibase service
+      - ./wikibase/LocalSettings.php:/var/www/html/LocalSettings.d/LocalSettings.override.php
+    networks:
+      default:
+        aliases:
+          - movies-wikibase-jobrunner.svc
+    environment:
+      <<: *wikibase_variables
+      MAX_JOBS: ${MOVIES_WIKIBASE_MAX_JOBS}
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-wikibase-jobrunner"
+      # pour que les mises à jour de cette image soient auto-déployées par watchtower
+      - "com.centurylinklabs.watchtower.scope=movies-watchtower-scope"
+
+  movies-wikibase-mysql:
+    image: "mariadb:${MOVIES_WIKIBASE_MYSQL_IMAGE_VERSION}"
+    container_name: movies-wikibase-mysql
+    restart: unless-stopped
+    volumes:
+      - ./volumes/mediawiki-mysql-data:/var/lib/mysql
+    environment:
+      # CONFIG - Change the default values below (should match values passed to wikibase)
+      MYSQL_DATABASE: ${MOVIES_WIKIBASE_DB_NAME}
+      MYSQL_USER: ${MOVIES_WIKIBASE_DB_USER}
+      MYSQL_PASSWORD: ${MOVIES_WIKIBASE_DB_PASS}
+      MYSQL_RANDOM_ROOT_PASSWORD: 'yes'
+    networks:
+      default:
+        aliases:
+         - movies-wikibase-mysql.svc
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-wikibase-mysql"
+    
+
+  movies-wikibase-wdqs-frontend:
+    image: "wikibase/wdqs-frontend:${MOVIES_WIKIBASE_WDQS_FRONTEND_IMAGE_VERSION}"
+    container_name: movies-wikibase-wdqs-frontend
+    restart: unless-stopped
+    depends_on:
+      - movies-wikibase-wdqs-proxy
+    volumes:
+      - ./wikibase/wdqs_front_index.html:/usr/share/nginx/html/index.html
+    networks:
+      default:
+        aliases:
+         - ${MOVIES_WIKIBASE_WDQS_FRONTEND_HOST}
+    environment:
+      WIKIBASE_HOST: ${MOVIES_WIKIBASE_HOST}
+      WDQS_HOST: movies-wikibase-wdqs-proxy.svc
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-wikibase-wdqs-frontend"
+
+  movies-wikibase-wdqs:
+    image: "wikibase/wdqs:${MOVIES_WIKIBASE_WDQS_IMAGE_VERSION}"
+    container_name: movies-wikibase-wdqs
+    restart: unless-stopped
+    command: /runBlazegraph.sh
+    volumes:
+      - ./volumes/query-service-data:/wdqs/data
+    networks:
+      default:
+        aliases:
+         - movies-wikibase-wdqs.svc
+    environment:
+      - WIKIBASE_HOST=${MOVIES_WIKIBASE_URL_PUBLIQUE}
+      - WDQS_HOST=movies-wikibase-wdqs.svc
+      - WDQS_PORT=9999
+      # CONFIG - WIKIBASE_SCHEME can be set to 'https' if the updater should expect https concept uris
+      - WIKIBASE_SCHEME=${MOVIES_WIKIBASE_SCHEME}
+    expose:
+      - 9999
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-wikibase-wdqs"
+
+  movies-wikibase-wdqs-proxy:
+    image: "wikibase/wdqs-proxy:${MOVIES_WIKIBASE_WDQS_PROXY_IMAGE_VERSION}"
+    container_name: movies-wikibase-wdqs-proxy
+    restart: unless-stopped
+    environment:
+      - PROXY_PASS_HOST=movies-wikibase-wdqs.svc:9999
+    depends_on:
+      - movies-wikibase-wdqs
+    networks:
+      default:
+        aliases:
+         - movies-wikibase-wdqs-proxy.svc
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-wikibase-wdqs-proxy"
+
+  movies-wikibase-wdqs-updater:
+    image: "wikibase/wdqs:${MOVIES_WIKIBASE_WDQS_IMAGE_VERSION}"
+    container_name: movies-wikibase-wdqs-updater
+    restart: unless-stopped
+    command: /runUpdate.sh
+    depends_on:
+    - movies-wikibase-wdqs
+    - movies-wikibase
+    networks:
+      default:
+        aliases:
+         - movies-wikibase-wdqs-updater.svc
+    environment:
+     #- WIKIBASE_HOST=${MOVIES_WIKIBASE_HOST}
+     - WIKIBASE_HOST=${MOVIES_WIKIBASE_URL_PUBLIQUE}
+     - WDQS_HOST=movies-wikibase-wdqs.svc
+     - WDQS_PORT=9999
+     # CONFIG - WIKIBASE_SCHEME can be set to 'https' if the updater should expect https concept uris
+     - WIKIBASE_SCHEME=${MOVIES_WIKIBASE_SCHEME}
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-wikibase-wdqs-updater"
+
+  movies-initializer:
+    image: dwdraju/alpine-curl-jq
+    container_name: movies-initializer
+    profiles: ["initializer"]
+    environment:
+      - NAME=${MOVIES_WIKIBASE_MW_ADMIN_NAME}
+      - PASS=${MOVIES_WIKIBASE_MW_ADMIN_PASS}
+      - BOTNAME=${MOVIES_WIKIBASE_MW_BOT_NAME}
+      - BOTPASS=${MOVIES_WIKIBASE_MW_BOT_PASS}      
+      - MOVIES_WIKIBASE_HOST=${MOVIES_WIKIBASE_HOST}
+    volumes:
+      - ./initializer:/home/data
+    command: /bin/sh -c "sh /home/data/createData.sh"
+    networks:
+      - default
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+
+  movies-db-dumper:
+    image: tiredofit/db-backup:4.0.35
+    container_name: movies-db-dumper
+    restart: unless-stopped
+    volumes:
+        - ${MOVIES_DB_DUMP_RACINE}:/backup/
+    depends_on:
+        - movies-wikibase-mysql
+    environment:
+      # DB_DUMP_BEGIN: "0130" <= tous les jours à 1h30 du matin GMT
+      # DB_DUMP_FREQ: 1440 <= chaque jour
+      # DB_CLEANUP_TIME: 10080 (1440*7) <= conserve uniquement les 7 derniers jours
+      CONTAINER_ENABLE_MONITORING: "FALSE"
+      DB01_BACKUP_BEGIN: "2359"
+      DB01_BACKUP_INTERVAL: "1440"
+      DB01_CHECKSUM: "SHA1"
+      DB01_CLEANUP_TIME: "10080"
+      DB01_COMPRESSION: "GZ"
+      DB01_FILESYSTEM_PATH: /backup/${MOVIES_DB_DUMP_WORKDIR}
+      DB01_FILESYSTEM_PERMISSION: 644
+      DB01_TYPE: "mysql"
+      DB01_HOST: "movies-wikibase-mysql"
+      DB01_NAME: ${MOVIES_WIKIBASE_DB_NAME}
+      DB01_USER: ${MOVIES_WIKIBASE_DB_USER}
+      DB01_PASS: ${MOVIES_WIKIBASE_DB_PASS}
+      DEBUG_MODE: "FALSE"
+      TIMEZONE: "Europe/Paris"
+    networks:
+      - default
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-db-dumper"
+
+  movies-reconciliation-redis:
+    image: "redis:alpine"
+    container_name: movies-reconciliation-redis
+    expose:
+      - "6379"
+    restart: unless-stopped
+    networks:
+      - default
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-reconciliation-redis"      
+
+  movies-reconciliation:
+    image: registry.gitlab.com/nfdi4culture/ta1-data-enrichment/openrefine-wikibase:1.1.0
+    container_name: movies-reconciliation
+    restart: unless-stopped
+    networks:
+      - default    
+#    ports:
+#     - "8000:8000"
+    volumes:
+#     - ./reconciliation/config.py:/openrefine-wikibase/config.py
+#     - ./reconciliation/manifest.json:/openrefine-wikibase/static/manifest.json
+     - ./reconciliation/config.sh:/openrefine-wikibase/config.sh
+    environment:
+     - WIKIBASE_NAME=Movies Reconciliation
+     - WIKIBASE_ADDRESS=${MOVIES_WIKIBASE_URL_PUBLIQUE}
+     - RECONCILE_ADDRESS=${MOVIES_WIKIBASE_SCHEME}://${MOVIES_WIKIBASE_URL_PUBLIQUE}/reconciliation
+     - QUERY_ADDRESS=${MOVIES_WIKIBASE_URL_PUBLIQUE}
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    command: >
+      sh -c "sh /openrefine-wikibase/config.sh && python app.py"
+    labels:
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-reconciliation"     
+    depends_on:
+     - movies-reconciliation-redis
+     - movies-rp
+      
+  movies-docusaurus:
+    image: abesesr/movies:${MOVIES_DOCUSAURUS_IMAGE_VERSION}-documentation
+    container_name: movies-docusaurus
+    restart: unless-stopped
+    networks:
+      - default
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    environment:
+      HTTP_BASEURL: ${MOVIES_WIKIBASE_URL_PUBLIQUE}/doc
+    #ports:
+    #  - ${MOVIES_DOCUSAURUS_HTTP_PORT}:80
+    labels:
+      # pour envoyer les logs dans le puits de log de l'abes
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-docusaurus"
+      # pour que les mises à jour de cette image soient auto-déployées par watchtower
+      - "com.centurylinklabs.watchtower.scope=movies-watchtower-scope"
+
+  movies-watchtower:
+    image: containrrr/watchtower:1.4.0
+    container_name: movies-watchtower
+    restart: unless-stopped
+    networks:
+      - default
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: 60
+      WATCHTOWER_DEBUG: "false"
+      WATCHTOWER_NO_STARTUP_MESSAGE: "true"
+      WATCHTOWER_WARN_ON_HEAD_FAILURE: "never"
+      WATCHTOWER_RUN_ONCE: ${MOVIES_WATCHTOWER_RUN_ONCE}
+      WATCHTOWER_NOTIFICATIONS: "slack"
+      WATCHTOWER_NOTIFICATION_SLACK_HOOK_URL: ${MOVIES_WATCHTOWER_NOTIFICATION_SLACK_HOOK_URL}
+      WATCHTOWER_NOTIFICATION_SLACK_IDENTIFIER: ${MOVIES_WATCHTOWER_NOTIFICATION_SLACK_IDENTIFIER}
+      WATCHTOWER_NOTIFICATION_SLACK_CHANNEL: "#notif-movies"
+      WATCHTOWER_SCOPE: "movies-watchtower-scope"
+    labels:
+      - "com.centurylinklabs.watchtower.scope=movies-watchtower-scope"
+
+  movies-grlc:
+    image: clariah/grlc:v1.3.8
+    container_name: movies-grlc
+    restart: unless-stopped
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    networks:
+      - default
+    environment:
+      GRLC_SERVER_NAME: ${MOVIES_GRLC_SERVER_NAME}
+      GRLC_GITHUB_ACCESS_TOKEN: ${MOVIES_GRLC_GITHUB_ACCESS_TOKEN}
+      GRLC_SPARQL_ENDPOINT: ${MOVIES_WIKIBASE_SCHEME}://${MOVIES_WIKIBASE_URL_PUBLIQUE}${MOVIES_GRLC_SPARQL_ENDPOINT}
+    labels:
+      # pour envoyer les logs dans le puits de log de l'abes
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-grlc"
+
+  movies-copy-backup:
+    image: abesesr/movies:develop-copy-backup
+    container_name: movies-copy-backup
+    profiles: ["test"]
+    restart: unless-stopped
+    mem_limit: ${MOVIES_MEM_LIMIT}
+    memswap_limit: ${MOVIES_MEMSWAP_LIMIT}
+    cpus: ${MOVIES_CPU_LIMIT}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+    networks:
+      - default
+    labels:
+      # pour envoyer les logs dans le puits de log de l'abes
+      - "co.elastic.logs/enabled=true"
+      - "co.elastic.logs/processors.add_fields.target="
+      - "co.elastic.logs/processors.add_fields.fields.abes_appli=movies"
+      - "co.elastic.logs/processors.add_fields.fields.abes_middleware=movies-copy-backup"
+      # pour que les mises à jour de cette image soient auto-déployées par watchtower
+      - "com.centurylinklabs.watchtower.scope=movies-watchtower-scope"
+
+volumes:
+  shared:
+  conf:
+  certs:
+  vhost.d:
+  html:
+  dhparam:
+

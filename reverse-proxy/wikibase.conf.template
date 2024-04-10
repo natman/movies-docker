@@ -1,0 +1,253 @@
+# configuration file /etc/nginx/conf.d/wikibase.conf
+# #
+
+# If we receive X-Forwarded-Proto, pass it through; otherwise, pass along the
+# scheme used to connect to this server
+map $http_x_forwarded_proto $proxy_x_forwarded_proto {
+    default $http_x_forwarded_proto;
+    '' $scheme;
+}
+map $http_x_forwarded_host $proxy_x_forwarded_host {
+    default $http_x_forwarded_host;
+    '' $http_host;
+}
+# If we receive X-Forwarded-Port, pass it through; otherwise, pass along the
+# server port the client connected to
+map $http_x_forwarded_port $proxy_x_forwarded_port {
+    default $http_x_forwarded_port;
+    '' $server_port;
+}
+# If the request from the downstream client has an "Upgrade:" header (set to any
+# non-empty value), pass "Connection: upgrade" to the upstream (backend) server.
+# Otherwise, the value for the "Connection" header depends on whether the user
+# has enabled keepalive to the upstream server.
+map $http_upgrade $proxy_connection {
+    default upgrade;
+    '' $proxy_connection_noupgrade;
+}
+map $upstream_keepalive $proxy_connection_noupgrade {
+    # Preserve nginx's default behavior (send "Connection: close").
+    default close;
+    # Use an empty string to cancel nginx's default behavior.
+    true '';
+}
+# Abuse the map directive (see <https://stackoverflow.com/q/14433309>) to ensure
+# that $upstream_keepalive is always defined.  This is necessary because:
+#   - The $proxy_connection variable is indirectly derived from
+#     $upstream_keepalive, so $upstream_keepalive must be defined whenever
+#     $proxy_connection is resolved.
+#   - The $proxy_connection variable is used in a proxy_set_header directive in
+#     the http block, so it is always fully resolved for every request -- even
+#     those where proxy_pass is not used (e.g., unknown virtual host).
+map "" $upstream_keepalive {
+    # The value here should not matter because it should always be overridden in
+    # a location block (see the "location" template) for all requests where the
+    # value actually matters.
+    default false;
+}
+# Apply fix for very long server names
+server_names_hash_bucket_size 128;
+
+# Set appropriate X-Forwarded-Ssl header based on $proxy_x_forwarded_proto
+map $proxy_x_forwarded_proto $proxy_x_forwarded_ssl {
+    default off;
+    https on;
+}
+gzip_types text/plain text/css application/javascript application/json application/x-javascript text/xml application/xml application/xml+rss text/javascript;
+log_format vhost '$host $remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" "$upstream_addr"';
+access_log off;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-CHACHA20-POLY1305';
+    ssl_prefer_server_ciphers off;
+error_log /dev/stderr;
+resolver 127.0.0.11;
+# HTTP 1.1 support
+proxy_http_version 1.1;
+proxy_buffering off;
+proxy_set_header Host $http_host;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection $proxy_connection;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Host $proxy_x_forwarded_host;
+proxy_set_header X-Forwarded-Proto $proxy_x_forwarded_proto;
+proxy_set_header X-Forwarded-Ssl $proxy_x_forwarded_ssl;
+proxy_set_header X-Forwarded-Port $proxy_x_forwarded_port;
+proxy_set_header X-Original-URI $request_uri;
+# Mitigate httpoxy attack (see README for details)
+proxy_set_header Proxy "";
+server {
+    server_name _; # This is just an invalid value which will never trigger on a real hostname.
+    server_tokens off;
+    http2 on;
+    listen 80;
+    listen 443 ssl;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+    access_log /var/log/nginx/access.log vhost;
+    # No default.crt certificate found for this vhost, so force nginx to emit a
+    # TLS error if the client connects via https.
+    ssl_ciphers aNULL;
+    set $empty "";
+    ssl_certificate data:$empty;
+    ssl_certificate_key data:$empty;
+    if ($https) {
+        return 444;
+    }
+    return 503;
+}
+# movies-test.abes.fr/
+upstream upstream-movies-wikibase {
+    # Container: movies-wikibase
+    #     networks:
+    #         movies-docker_default (reachable)
+    #     IP address: 172.29.0.6
+    #     exposed ports: 80/tcp
+    #     default port: 80
+    #     using port: 80
+    server movies-wikibase;
+}
+# movies-test.abes.fr/sparql
+upstream upstream-movies-wikibase-wdqs-frontend {
+    # Container: movies-wikibase-wdqs-frontend
+    #     networks:
+    #         movies-docker_default (reachable)
+    #     IP address: 172.29.0.8
+    #     exposed ports: 80/tcp
+    #     default port: 80
+    #     using port: 80
+    server movies-wikibase-wdqs-frontend;
+}
+# movies-test.abes.fr/reconciliation
+upstream upstream-movies-reconciliation {
+    # Container: movies-reconciliation
+    server movies-reconciliation:8000;
+}
+# movies-test.abes.fr/doc
+upstream upstream-movies-doc {
+    # Container: movies-docusaurus
+    server movies-docusaurus;
+}
+# movies-test.abes.fr/grlc
+upstream upstream-movies-grlc {
+    # Container: movies-grlc
+    server movies-grlc;
+}
+
+geo $dollar {
+    default "$";
+}
+server {
+    server_name ${MOVIES_WIKIBASE_URL_PUBLIQUE};
+    http2 on;
+    access_log /var/log/nginx/access.log vhost;
+    listen 80 ;
+    listen 443 ssl ;
+    # No certificate found for this vhost, so force nginx to emit a TLS error if
+    # the client connects via https.
+    ssl_ciphers aNULL;
+    set $empty "";
+    ssl_certificate data:$empty;
+    ssl_certificate_key data:$empty;
+    if ($https) {
+        return 444;
+    }
+
+
+    #OpenRefine Wikibase :
+
+    location ^~ /reconciliation {
+        proxy_pass http://upstream-movies-reconciliation/;
+        set $upstream_keepalive false;
+    }
+
+
+    #Docusaurus :
+
+    location ^~ /doc {
+        proxy_pass http://upstream-movies-doc/;
+        set $upstream_keepalive false;
+    }
+
+
+    #GRLC :
+
+    rewrite ^/api(/)?$ /api/v1 redirect;
+
+    location /api {
+        rewrite /api/(.*) /api-git/abes-esr/movies-api/subdir/$1 break;
+        proxy_pass http://upstream-movies-grlc/;
+    }
+
+    location /static {
+        rewrite /static/(.*) /static/$1 break;
+        proxy_pass http://upstream-movies-grlc/;
+    }
+
+   location /api-git {
+        rewrite /api-git/(.*) /api-git/$1 break;
+        proxy_pass http://upstream-movies-grlc/;
+    }
+
+
+    #WDQS :
+
+    location /css {
+        proxy_pass http://upstream-movies-wikibase-wdqs-frontend/css/;
+        set $upstream_keepalive false;
+    }
+
+    location /js {
+        proxy_pass http://upstream-movies-wikibase-wdqs-frontend/js/;
+        set $upstream_keepalive false;
+    }
+
+    rewrite ^/sparql$ /sparql/# redirect;
+
+    location ^~ /sparql {
+        proxy_pass http://upstream-movies-wikibase-wdqs-frontend/;
+        set $upstream_keepalive false;
+    }
+
+    location /proxy/wdqs {
+        rewrite /proxy/wdqs/(.*) /$1 break;
+        proxy_pass http://movies-wikibase-wdqs-proxy.svc;
+    }
+
+    location /entity/statement/Q {
+        rewrite /entity/statement/(Q\d+)\-(.*) /wiki/Item:$1#$1$dollar$2 redirect;
+    }
+
+    location /entity/statement/P {
+        rewrite /entity/statement/(P\d+)\-(.*) /wiki/Property:$1#$1$dollar$2 redirect;
+    }
+
+    location /prop {
+        rewrite /prop(/direct|/statement|/statement|/reference|/qualifier|/novalue|/direct-normalized)?(/value|/value-normalized)?/(.*) /wiki/Property:$3 redirect;
+    }
+
+
+    #Wikibase :
+
+    location ^~ /w {
+        proxy_pass http://upstream-movies-wikibase;
+        set $upstream_keepalive false;
+    }
+
+    #Suppression de .+\.json| pour les requêtes Grlc terminant par .json
+    location ~ /(.+\.svg)$ {
+        proxy_pass http://upstream-movies-wikibase-wdqs-frontend/$1;
+        set $upstream_keepalive false;
+    }
+
+    location /proxy/wikibase {
+        rewrite /proxy/wikibase/(.*) /$1 break;
+        proxy_pass http://upstream-movies-wikibase;
+    }
+
+    location / {
+            proxy_pass http://upstream-movies-wikibase;
+            set $upstream_keepalive false;
+    }
+
+}
